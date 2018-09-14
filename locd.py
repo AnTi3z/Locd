@@ -4,12 +4,16 @@ import time
 import argparse
 import logging
 import mmap
+import threading
 
 import daemon
 from daemon import pidfile
 from lockfile import AlreadyLocked
 
 import location
+
+logger = logging.getLogger('loc_daemon')
+logger.setLevel(logging.DEBUG)
 
 curf = '/usr/local/www/res/cur.txt'
 CUR_LOC_FILE = '/usr/local/www/res/cur.txt'
@@ -19,14 +23,29 @@ PID_FILE = 'pid'
 LOG_FILE = 'log'
 SOCK_FILE = '/var/run/locd/locd.sock'
 MMAP_FILE = '/var/run/locd/locd.mmap'
-CUR_FILE_TIME = 0.1
+REFRESH_CUR_TIME = 0.2
+
+
+class FileDumper(threading.Thread):
+    def __init__(self, fo, tracker):
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self.tracker = tracker
+        self.curf = fo
+
+    def run(self):
+        while self.tracker.get_track():
+            self.save_once()
+            time.sleep(REFRESH_CUR_TIME)
+
+    def save_once(self):
+        lat, lon = self.tracker.accurate_loc().pos
+        with open(self.curf, 'w') as f:
+            f.write(f'{lat},{lon}')
 
 def daemon_start(args):
     logf = args.log_file
     ### This does the "work" of the daemon
-
-    logger = logging.getLogger('loc_daemon')
-    logger.setLevel(logging.DEBUG)
 
     fh = logging.FileHandler(logf)
     fh.setLevel(logging.DEBUG)
@@ -50,12 +69,15 @@ def daemon_start(args):
     if args['cmd'] == 'move':
         trck.move_to(float(args['lat']), float(args['lat']))
 
-    while trck.get_track():
-        lat, lon = trck.accurate_loc().pos
-        logger.info('New: Lat: {}, Lon: {}'.format(lat, lon))
-        with open(curf,'w') as f:
-            f.write(f'{lat},{lon}')
-        time.sleep(CUR_FILE_TIME)
+    curf_thread = FileDumper(curf, trck)
+
+    if args['force-file']:
+        curf_thread.run()
+
+    while args['i'] or args['cmd']=='start':
+        time.sleep(1)
+        # TODO: sock server listen
+
 
 
 def stopped_daemon(args, pidf):
