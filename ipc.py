@@ -87,6 +87,15 @@ class Message(object):
         return '{}({}{})'.format(name, args, kwargs)
 
 
+class Action(Message):
+    def __init__(self, action_type, **properties):
+        self.type = action_type
+        self.properties = properties
+
+    def _get_args(self):
+        return [self.type], self.properties
+
+
 class Client(object):
     def __init__(self, server_address):
         self.addr = server_address
