@@ -43,6 +43,53 @@ class FileDumper(threading.Thread):
         with open(self.curf, 'w') as f:
             f.write(f'{lat},{lon}')
 
+
+class Locd():
+    def __init__(self, args):
+        self.curf = args['cur_file']
+        self.pidf = pidfile.TimeoutPIDLockFile(args['pid_file'])
+        with open(curf, 'r') as f:
+            # TODO: add try/except
+            lat, lon = [float(coord) for coord in f.readline().split(',')]
+            # logger.info(f'Read from {curf}: Lat: {lat}, Lon: {lon}')
+        self.tracker = location.Tracker(lat, lon)
+        self.curf_thr = FileDumper(curf, self.tracker)
+        self.context = None
+
+    def run(self):
+        with self.context:
+            pass
+
+    def is_running(self):
+        try:
+            self.pidf.acquire()
+            # daemon stopped
+            return False
+        except AlreadyLocked:
+            try:
+                os.kill(self.pidf.read_pid(), 0)
+                # daemon running
+                return True
+            except OSError:  # No process with locked PID
+                # daemon been killed (stopped)
+                self.pidf.break_lock()
+                return False
+
+    def stop(self):
+        if self.is_running():
+            # TODO: save state
+            self.tracker.set_speed(0)
+            self.curf_thr.cancel()
+            self.curf_thr.save_once()
+            os.kill(self.pidf.read_pid(), 15)
+
+    def parse_args(self, args):
+        pass
+
+    def _req_handler(self):
+        pass
+
+
 def daemon_start(args):
     logf = args.log_file
     ### This does the "work" of the daemon
