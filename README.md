@@ -1,0 +1,2 @@
+# Locd
+Location tracker daemon
