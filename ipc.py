@@ -1,17 +1,4 @@
-#   Copyright 2017 Dan Krause
-#
-#   Licensed under the Apache License, Version 2.0 (the "License");
-#   you may not use this file except in compliance with the License.
-#   You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-#   Unless required by applicable law or agreed to in writing, software
-#   distributed under the License is distributed on an "AS IS" BASIS,
-#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#   See the License for the specific language governing permissions and
-#   limitations under the License.
-
+import os
 import socketserver
 import socket
 import struct
@@ -21,11 +8,6 @@ import json
 class IPCError(Exception):
     pass
 
-class UnknownMessageClass(IPCError):
-    pass
-
-class InvalidSerialization(IPCError):
-    pass
 
 class ConnectionClosed(IPCError):
     pass
@@ -39,72 +21,19 @@ def _read_objects(sock):
     data = sock.recv(size - 4)
     if len(data) == 0:
         raise ConnectionClosed()
-    return Message.deserialize(json.loads(data))
+    return json.loads(data)
 
 
 def _write_objects(sock, objects):
-    data = json.dumps([o.serialize() for o in objects])
+    data = json.dumps(objects)
     sock.sendall(struct.pack('!i', len(data) + 4))
     sock.sendall(data.encode('utf-8'))
 
-def _recursive_subclasses(cls):
-    classmap = {}
-    for subcls in cls.__subclasses__():
-        classmap[subcls.__name__] = subcls
-        classmap.update(_recursive_subclasses(subcls))
-    return classmap
 
-
-class Message(object):
-    @classmethod
-    def deserialize(cls, objects):
-        classmap = _recursive_subclasses(cls)
-        serialized = []
-        for obj in objects:
-            if isinstance(obj, Message):
-                serialized.append(obj)
-            else:
-                try:
-                    serialized.append(classmap[obj['class']](*obj['args'], **obj['kwargs']))
-                except KeyError as e:
-                    raise UnknownMessageClass(e)
-                except TypeError as e:
-                    raise InvalidSerialization(e)
-        return serialized
-
-    def serialize(self):
-        args, kwargs = self._get_args()
-        return {'class': type(self).__name__, 'args': args, 'kwargs': kwargs}
-
-    def _get_args(self):
-        return [], {}
-
-    def __repr__(self):
-        r = self.serialize()
-        args = ', '.join([repr(arg) for arg in r['args']])
-        kwargs = ''.join([', {}={}'.format(k, repr(v)) for k, v in r['kwargs'].items()])
-        name = r['class']
-        return '{}({}{})'.format(name, args, kwargs)
-
-
-class Action(Message):
-    def __init__(self, action_type, **properties):
-        self.type = action_type
-        self.properties = properties
-
-    def _get_args(self):
-        return [self.type], self.properties
-
-
-class Client(object):
+class Client:
     def __init__(self, server_address):
         self.addr = server_address
-        # if isinstance(self.addr, basestring):
-        if True:
-            address_family = socket.AF_UNIX
-        else:
-            address_family = socket.AF_INET
-        self.sock = socket.socket(address_family, socket.SOCK_STREAM)
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
     def connect(self):
         self.sock.connect(self.addr)
@@ -124,8 +53,10 @@ class Client(object):
         return _read_objects(self.sock)
 
 
-class Server(socketserver.ThreadingUnixStreamServer):
+class Server(socketserver.UnixStreamServer):
     def __init__(self, server_address, callback, bind_and_activate=True):
+        self.addr = server_address
+
         if not callable(callback):
             callback = lambda x: []
 
@@ -138,10 +69,12 @@ class Server(socketserver.ThreadingUnixStreamServer):
                         return
                     _write_objects(self.request, callback(results))
 
-        #if isinstance(server_address, basestring):
-        if True:
-            self.address_family = socket.AF_UNIX
-        else:
-            self.address_family = socket.AF_INET
-
         socketserver.TCPServer.__init__(self, server_address, IPCHandler, bind_and_activate)
+
+    def server_close(self):
+        super().server_close()
+        try:
+            os.unlink(self.addr)
+        except OSError:
+            if os.path.exists(self.addr):
+                raise

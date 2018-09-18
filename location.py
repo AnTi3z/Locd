@@ -104,12 +104,17 @@ class Tracker:
         self._track = None  # [[lat1, lon1], [lat2, lon2], ... etc
         self._odo = 0
 
-    def kw(self):
-        return {'rt': self._sync_time,
-                'speed': self._speed,
-                'loc': self._cur_loc.pos,
-                'traget_loc': self._target_loc.pos,
+    def get_status(self):
+        self._calc_loc()
+        if self._track:
+            az, _ = self._cur_loc.inv(*self._track[0])
+        else:
+            az = None
+        return {'cur_loc': self._cur_loc.pos,
+                'target_loc': self._target_loc.pos,
                 'track': self._track,
+                'speed': self._speed,
+                'azimuth': az,
                 'odo': self._odo}
 
     def get_track(self):
@@ -123,18 +128,20 @@ class Tracker:
         if speed >= 0:
             # Фиксируем нашу текущую позицию
             self._calc_loc()
-            self._speed = speed
+            if self._cur_loc != self._target_loc:
+                self._speed = speed
 
     def set_pos(self, new_lat, new_lon):
         self._speed = 0
         self._cur_loc = Location(new_lat, new_lon)
         self._sync_time = time.time()
 
-    # Координаты последней полученной точки (Location)
+    # Получить точные координаты текущей точки (Location)
     def accurate_loc(self):
         self._calc_loc()
         return self._cur_loc
 
+    # Получить координаты текущей точки со случайным небольшим смещением (Location)
     def noised_loc(self):
         self._calc_loc()
         fake_loc = Location(*self._cur_loc.pos)
@@ -142,8 +149,11 @@ class Tracker:
         fake_loc.y = random.gauss(fake_loc.y, self._rnd_noise / 2)
         return fake_loc
 
+    # Координаты последней полученной точки (Location)
+    def last_loc(self):
+        return self._cur_loc
+
     # Время (в сек) с момента последнего расчета координат
-    @property
     def elapsed_time(self):
         return time.time() - self._sync_time
 
@@ -157,9 +167,11 @@ class Tracker:
                 geom = Tracker.ors_client.directions(coordinates=((self._cur_loc.lon, self._cur_loc.lat),
                                                      (self._target_loc.lon, self._target_loc.lat)),
                                                      profile=prof)['routes'][0]['geometry']
-                self._track = convert.decode_polyline(geom)['coordinates']
+                track = convert.decode_polyline(geom)['coordinates']
+                # Меняем (lon, lat) координаты на (lat, lon)
+                self._track = [(pnt[1], pnt[0]) for pnt in track]
                 # Последняя точка в маршруте должна быть наша цель
-                self._track.append([self._target_loc.lon, self._target_loc.lat])
+                self._track.append(self._target_loc.pos)
             except Exception as e:
                 print(e)
                 # Маршрут не построен, никуда не двигаемся
@@ -208,8 +220,7 @@ class Tracker:
             # Перебираем точки в треке, пока "пройденный" нами путь больше расстояния до следующей точки
             while self._track:
                 # Координаты следующей точки в треке
-                lon, lat = self._track[0]
-                next_pnt = Location(lat, lon)
+                next_pnt = Location(*self._track[0])
                 # Азимут и расстояние до следующей точки
                 azimuth, dist = self._cur_loc.inv(*next_pnt.pos)
                 # Если до следющей точки дальше чем пройденный нами путь, то считаем где мы остановились
