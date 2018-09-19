@@ -1,10 +1,10 @@
-import sys
 import os
 import time
 import argparse
 import logging
 import threading
 import signal
+import json
 
 import daemon
 from daemon import pidfile
@@ -13,15 +13,7 @@ from lockfile import AlreadyLocked
 import location
 import ipc
 
-
-CUR_LOC_FILE = '/usr/local/www/res/cur.txt'
-#PID_FILE = '/var/run/locd/locd.pid'
-#LOG_FILE = '/var/log/locd/locd.log'
-PID_FILE = 'pid'
-LOG_FILE = 'log'
-#SOCK_FILE = '/var/run/locd/locd.sock'
-SOCK_FILE = './locd.sock'
-REFRESH_CUR_TIME = 0.5
+from config import *
 
 
 logger = logging.getLogger('locd')
@@ -29,11 +21,12 @@ logger.setLevel(logging.DEBUG)
 
 
 class FileSaver(threading.Thread):
-    def __init__(self, curf, tracker):
+    def __init__(self, curf, tracker):  # , lock):
         threading.Thread.__init__(self, daemon=True)
         self.stopped = True
         self.tracker = tracker
         self.curf = curf
+        # self.lock = lock
 
     def run(self):
         logger.info('Starting cur file save...')
@@ -49,7 +42,7 @@ class FileSaver(threading.Thread):
         self.stopped = True
 
     def save_once(self):
-        # TODO: WITH THREAD LOCK
+        # with self.lock:
         lat, lon = self.tracker.accurate_loc().pos
 
         with open(self.curf, 'w') as f:
@@ -57,22 +50,23 @@ class FileSaver(threading.Thread):
 
 
 class Locd():
-    def __init__(self, curf=CUR_LOC_FILE, pidf=PID_FILE, sockf=SOCK_FILE, logf=LOG_FILE):
+    def __init__(self, curf=None, pidf=None, sockf=None, logf=None):
         self.curf = curf
-        self.pidlockf = pidfile.TimeoutPIDLockFile(pidf)
+        self.pidlockf = pidfile.TimeoutPIDLockFile(pidf) if pidf else None
         self.sockf = sockf
-        self.logf = logf
-        self.log_fh = logging.FileHandler(logf)
-        Locd._logger_init(self.log_fh)
+        self._log_fh = logging.FileHandler(logf) if logf else None
+
+        if self._log_fh:
+            Locd._logger_init(self._log_fh)
 
         self.tracker = None
         self.server = None
+        # self.lock = None
         self.curf_thrd = None
         self.context = None
 
     @staticmethod
     def _logger_init(fh):
-        # fh = logging.FileHandler(logf)
         fh.setLevel(logging.DEBUG)
 
         formatstr = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -83,6 +77,7 @@ class Locd():
         logger.addHandler(fh)
 
     def start(self):
+        # TODO: check curf, pidf, logf, sockf
         logger.info(f'Location daemon starting...')
 
         with open(self.curf, 'r') as f:
@@ -95,46 +90,46 @@ class Locd():
             working_directory='./',
             umask=0o002,
             pidfile=self.pidlockf,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            #files_preserve=[self.log_fh]
+            stdout=self._log_fh.stream,
+            stderr=self._log_fh.stream,
+            # files_preserve=[self._log_fh.stream]
             )
         with self.context:
             self.run()
 
     def run(self):
-        self.server = ipc.Server(self.sockf, self._req_handler)
-        self.curf_thrd = FileSaver(self.curf, self.tracker)
-        # TODO: Own logger for daemon
-        #print(vars(logger))
-        fh = logging.FileHandler(self.logf)
-        #fh.setLevel(logging.DEBUG)
         logger.info(f'Location daemon STARTED!')
+
+        self.server = ipc.Server(self.sockf, self._req_handler)
+        # self.lock = threading.RLock()
+        self.curf_thrd = FileSaver(self.curf, self.tracker)  # , self.lock)
 
         with self.server:
             self.server.serve_forever()
 
     def request(self, args):
+        # TODO: check sockf
         logger.debug(f'Request to daemon: {args}')
         if self.is_running():
             with ipc.Client(self.sockf) as client:
-                # response = client.send(args)
                 try:
                     response = client.send(args)
                 except ipc.ConnectionClosed:
                     if args['cmd'] != 'stop':
                         raise
                     else:
-                        logger.info('Daemon succefuly stopped')
-                        return "STOPPED"
+                        logger.info('Daemon successfully stopped')
+                        return {}
 
                 logger.debug(f'Response from daemon: {response}')
                 return response
         else:
             logger.info(f'Request to not runned daemon: {args}')
-            return "STOPPED"
+            # TODO: raise exception
+            return {}
 
     def is_running(self):
+        if not self.pidlockf: return False
         try:
             self.pidlockf.acquire()
             # daemon stopped
@@ -153,35 +148,63 @@ class Locd():
     def kill(self):
         if self.is_running():
             self.curf_thrd.stop()
-            # self.server.shutdown()
             os.kill(self.pidlockf.read_pid(), signal.SIGTERM)
-            # self.context.close()
             logger.info(f'Location daemon STOPPED!')
 
     def _req_handler(self, req):
         logger.info(f'Got request by location daemon')
-        # TODO: WITH THREAD LOCK
+        # with self.lock:
         if req['cmd'] == 'move':
             self.tracker.move_to(req['lat'], req['lon'])
-            # self.curf_thrd.start()
+            self.curf_thrd.start()
             return self.tracker.get_status()
         elif req['cmd'] == 'speed':
             self.tracker.speed = req['spd']
+            self.tracker.accurate_loc()
             return self.tracker.get_status()
         elif req['cmd'] == 'status':
             self.tracker.accurate_loc()
             return self.tracker.get_status()
         elif req['cmd'] == 'cur':
-            return self.tracker.accurate_loc().pos
+            return {'cur_loc': self.tracker.accurate_loc().pos}
         elif req['cmd'] == 'track':
             self.tracker.accurate_loc()
-            return self.tracker.get_track()
+            return {'track': self.tracker.get_track()}
         elif req['cmd'] == 'stop':
-            self.tracker.accurate_loc()
             self.kill()
         elif req['cmd'] == 'start':
             self.tracker.accurate_loc()
             return self.tracker.get_status()
+
+
+def main(**kwargs):
+    cur_file = kwargs.pop('cur_file') if 'cur_file' in kwargs else CUR_LOC_FILE
+    pid_file = kwargs.pop('pid_file') if 'pid_file' in kwargs else PID_FILE
+    sock_file = kwargs.pop('sock_file') if 'sock_file' in kwargs else SOCK_FILE
+    log_file = kwargs.pop('log_file') if 'log_file' in kwargs else LOG_FILE
+
+    loc_daemon = Locd(curf=cur_file, pidf=pid_file, sockf=sock_file, logf=log_file)
+
+    if kwargs['cmd'] in ['start', 'move'] and not loc_daemon.is_running():
+        loc_daemon.start()
+
+    result = {'online': loc_daemon.is_running(),
+              'req_cmd': kwargs['cmd']}
+
+    if result['online']:
+        response = loc_daemon.request(kwargs)
+        result['status'] = response
+    else:
+        if kwargs['cmd'] == 'cur':
+            with open(cur_file, 'r') as f:
+                # TODO: add try/except
+                lat, lon = [float(coord) for coord in f.readline().split(',')]
+                logger.info(f"Read from {cur_file}: Lat: {lat}, Lon: {lon}")
+                result['status'] = {'cur_loc': [lat, lon]}
+        else:
+            result['status'] = {}
+
+    return result
 
 
 if __name__ == "__main__":
@@ -203,6 +226,7 @@ if __name__ == "__main__":
                                                      '(Daemon will automaticaly start)')
     parser_move.add_argument('lat', type=float, help='Latitude of point')
     parser_move.add_argument('lon', type=float, help='Longitude of point')
+    # parser_move.add_argument('-k', help='Kill the deamon if movement had finished')
 
     subparsers.add_parser('stop', help='Stop movement and daemon')
 
@@ -211,28 +235,8 @@ if __name__ == "__main__":
     parser_speed = subparsers.add_parser('speed', help='Setup current movement speed')
     parser_speed.add_argument('spd', type=float, help='Speed in km/h')
 
-    args = vars(parser.parse_args())
+    kwargs = vars(parser.parse_args())
 
-    cur_file = args.pop('cur_file')
-    pid_file = args.pop('pid_file')
-    sock_file = args.pop('sock_file')
-    log_file = args.pop('log_file')
+    result = main(**kwargs)
 
-    loc_daemon = Locd(curf=cur_file, pidf=pid_file, sockf=sock_file, logf=log_file)
-
-    if args['cmd'] in ['start', 'move'] and not loc_daemon.is_running():
-        loc_daemon.start()
-
-    if loc_daemon.is_running():
-        result = loc_daemon.request(args)
-        print(f'ONLINE: {result}')
-    else:
-        if args['cmd'] == 'cur':
-            with open(cur_file, 'r') as f:
-                # TODO: add try/except
-                lat, lon = [float(coord) for coord in f.readline().split(',')]
-                logger.info(f"Read from {cur_file}: Lat: {lat}, Lon: {lon}")
-                print(f'OFFLINE: [{lat}, {lon}]')
-        else:
-            print(f'OFFLINE: []')
-
+    print(json.dumps(result))
