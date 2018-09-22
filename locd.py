@@ -160,10 +160,8 @@ class Locd():
             return self.tracker.get_status()
         elif req['cmd'] == 'speed':
             self.tracker.speed = req['spd']
-            self.tracker.accurate_loc()
             return self.tracker.get_status()
         elif req['cmd'] == 'status':
-            self.tracker.accurate_loc()
             return self.tracker.get_status()
         elif req['cmd'] == 'cur':
             return {'cur_loc': self.tracker.accurate_loc().pos}
@@ -173,7 +171,6 @@ class Locd():
         elif req['cmd'] == 'stop':
             self.kill()
         elif req['cmd'] == 'start':
-            self.tracker.accurate_loc()
             return self.tracker.get_status()
 
 
