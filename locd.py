@@ -174,7 +174,9 @@ class Locd():
             return self.tracker.get_status()
 
 
-def main(**kwargs):
+def main(*argc, **kwargs):
+    if argc:
+        kwargs['cmd'] = argc[0]
     cur_file = kwargs.pop('cur_file') if 'cur_file' in kwargs else CUR_LOC_FILE
     pid_file = kwargs.pop('pid_file') if 'pid_file' in kwargs else PID_FILE
     sock_file = kwargs.pop('sock_file') if 'sock_file' in kwargs else SOCK_FILE
